@@ -2,7 +2,7 @@ camera:
   index: 0
   width: 1280
   height: 720
-  fps: 30
+  fps: 60
   # Optional OpenCV calibration file (npz/OpenCV YAML or NPZ with camera_matrix, dist_coeffs)
   calibration_file: null
 
@@ -11,15 +11,24 @@ model:
   path: yolov8n.pt
   conf: 0.35
   iou: 0.45
-  device: ""  # "" = auto, "cpu", "0" for CUDA
+  imgsz: 640          # inference size (display stays 1280x720; boxes scaled back)
+  max_det: 20
+  half: true          # FP16 on CUDA — big FPS win, negligible accuracy loss
+  device: ""          # "" = auto, "cpu", "0" for CUDA
   # Custom class names for AeroShield training; empty = COCO + stub mapping
   class_names: []
-  # When using COCO, map selected COCO classes to AeroShield labels (demo)
+  # Only these COCO ids when using stub map (airplane=4, bird=14, kite=33)
+  filter_classes: [4, 14, 33]
   coco_stub_map:
     airplane: F16
     bird: MiniIHA
     kite: BalistikFuze
     helicopter: Helikopter
+
+performance:
+  jpeg_quality: 70      # IPC encode quality (lower = faster)
+  camera_buffer: 1      # OpenCV buffer — 1 = lowest latency
+  infer_every_n: 1      # 2 = skip alternate frames (Kalman coast) if still slow
 
 serial:
   port: "COM3"
@@ -72,4 +81,5 @@ safety:
 
 ui:
   window_title: "AeroShield GCS"
-  target_gui_hz: 30
+  target_gui_hz: 20
+  display_max_width: 960

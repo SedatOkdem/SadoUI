@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QApplication
 
 from aeroshield.ui.main_window import MainWindow
@@ -44,6 +44,8 @@ class AeroShieldApp:
         self._maint_active = False
         self._maint_tick = None
         self._estop_ack_logged = False
+        self._last_slider_sync = 0.0
+        self._last_range_sync = 0.0
 
     def start_workers(self) -> None:
         self.processes = [
@@ -94,10 +96,10 @@ class AeroShieldApp:
         self._cmd_timer.timeout.connect(self._heartbeat_command)
         self._cmd_timer.start()
 
-        self.bridge = GuiBridge(self.ui_telem_q, self.serial_telem_q, self.op_q)
-        self.bridge.frame_ready.connect(self.window.video.update_frame)
-        self.bridge.telemetry_ready.connect(self._on_telemetry)
-        self.bridge.log_ready.connect(self.window.telemetry.append_log)
+        self.bridge = GuiBridge(self.ui_telem_q, self.serial_telem_q, self.op_q, self.config)
+        self.bridge.frame_ready.connect(self.window.video.update_frame, type=Qt.QueuedConnection)
+        self.bridge.telemetry_ready.connect(self._on_telemetry, type=Qt.QueuedConnection)
+        self.bridge.log_ready.connect(self.window.telemetry.append_log, type=Qt.QueuedConnection)
         self.bridge.start()
 
         # Seed initial command
@@ -187,13 +189,18 @@ class AeroShieldApp:
                     self.window.control.on_estop_cleared()
         if not self.window.control.use_manual_range.isChecked():
             rm = telem.get("range_m")
-            if rm is not None:
+            now = time.time()
+            if rm is not None and (now - self._last_range_sync) > 0.25:
+                self._last_range_sync = now
                 self.window.control.range_spin.blockSignals(True)
                 self.window.control.range_spin.setValue(float(rm))
                 self.window.control.range_spin.blockSignals(False)
-        # Keep manual sliders roughly synced in auto stages
+        # Keep manual sliders roughly synced in auto stages (throttled)
         if int(telem.get("stage", 1)) != 1:
-            self.window.control.set_pan_tilt(int(telem.get("pan", 0)), int(telem.get("tilt", 0)))
+            now = time.time()
+            if (now - self._last_slider_sync) > 0.15:
+                self._last_slider_sync = now
+                self.window.control.set_pan_tilt(int(telem.get("pan", 0)), int(telem.get("tilt", 0)))
 
     def _refresh_ports(self) -> None:
         ports = []

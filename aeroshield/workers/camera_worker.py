@@ -1,4 +1,4 @@
-"""Camera capture process."""
+"""Camera capture process — low-latency grab."""
 
 from __future__ import annotations
 
@@ -15,19 +15,30 @@ from aeroshield.workers.ipc import put_latest
 
 def camera_process_main(frame_q: Queue, stop_event, config: dict[str, Any]) -> None:
     cam = config.get("camera", {})
+    perf = config.get("performance", {})
     index = int(cam.get("index", 0))
     width = int(cam.get("width", 1280))
     height = int(cam.get("height", 720))
-    target_fps = float(cam.get("fps", 30))
+    target_fps = float(cam.get("fps", 60))
     period = 1.0 / max(1.0, target_fps)
+    jpeg_q = int(perf.get("jpeg_quality", 70))
+    buffer_size = int(perf.get("camera_buffer", 1))
 
     camera_matrix, dist = load_calibration(cam.get("calibration_file"))
     cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
     if not cap.isOpened():
         cap = cv2.VideoCapture(index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, target_fps)
+
+    if cap.isOpened():
+        # MJPG drastically reduces USB bandwidth / CPU on webcams
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, target_fps)
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
+        except Exception:
+            pass
 
     frame_id = 0
     use_synthetic = not cap.isOpened()
@@ -37,16 +48,15 @@ def camera_process_main(frame_q: Queue, stop_event, config: dict[str, Any]) -> N
         t0 = time.time()
         if use_synthetic:
             frame = _synthetic_frame(width, height, frame_id)
-            ok = True
         else:
             ok, frame = cap.read()
             if not ok or frame is None:
                 frame = _synthetic_frame(width, height, frame_id)
-                ok = True
 
-        frame = undistort(frame, camera_matrix, dist)
+        if camera_matrix is not None:
+            frame = undistort(frame, camera_matrix, dist)
         if frame.shape[1] != width or frame.shape[0] != height:
-            frame = cv2.resize(frame, (width, height))
+            frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
 
         now = time.time()
         dt = now - t_last
@@ -54,8 +64,7 @@ def camera_process_main(frame_q: Queue, stop_event, config: dict[str, Any]) -> N
         fps = 1.0 / dt if dt > 1e-6 else 0.0
         frame_id += 1
 
-        # JPEG encode keeps IPC lighter than raw ndarray
-        ok_j, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        ok_j, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_q])
         if ok_j:
             put_latest(
                 frame_q,
@@ -71,14 +80,16 @@ def camera_process_main(frame_q: Queue, stop_event, config: dict[str, Any]) -> N
             )
 
         elapsed = time.time() - t0
-        time.sleep(max(0.0, period - elapsed))
+        # Don't oversleep — if capture already slow, skip wait
+        wait = period - elapsed
+        if wait > 0.001:
+            time.sleep(wait)
 
     if cap is not None:
         cap.release()
 
 
 def _synthetic_frame(width: int, height: int, frame_id: int) -> np.ndarray:
-    """Synthetic sky + moving blob when no camera is available."""
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     frame[:, :] = (60, 40, 20)
     cv2.rectangle(frame, (0, int(height * 0.65)), (width, height), (40, 70, 40), -1)

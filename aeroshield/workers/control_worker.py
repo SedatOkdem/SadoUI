@@ -62,6 +62,11 @@ def control_process_main(
     estop_ack_until = 0.0
     estop_source = "-"
     last_mod = int(ModCode.HOME)
+    last_ui_push = 0.0
+    last_frame_id_sent = None
+    pending_events: list = []
+    ui_hz = float(config.get("ui", {}).get("target_gui_hz", 25))
+    ui_period = 1.0 / max(10.0, min(45.0, ui_hz))
 
     while not stop_event.is_set():
         now = time.time()
@@ -325,46 +330,65 @@ def control_process_main(
         put_latest(uart_cmd_q, cmd)
 
         events = fsm.pop_events()
-        telem = {
-            "ts": now,
-            "linked": bool(serial_telem.get("linked", False)),
-            "mock": bool(serial_telem.get("mock", True)),
-            "failsafe": failsafe,
-            "status": int(serial_telem.get("status", 0)),
-            "limit_pan": int(serial_telem.get("limit_pan", 0)),
-            "limit_tilt": int(serial_telem.get("limit_tilt", 0)),
-            "fsm": fsm.state.name,
-            "stage": int(stage.value),
-            "estop_active": estop_active,
-            "estop_source": estop_source if estop_active else "-",
-            "estop_cleared_ack": estop_cleared_ack or (now < estop_ack_until),
-            "estop_reset_waiting_hw": estop_reset_waiting_hw,
-            "estop_reset_pending": estop_clear_pending,
-            "fps": float((last_track or {}).get("fps") or 0.0),
-            "latency_ms": float((last_track or {}).get("latency_ms") or 0.0),
-            "pan": int(round(pan_pos)),
-            "tilt": int(round(tilt_pos)),
-            "fire": int(fire_bit),
-            "locked": locked,
-            "wez_ok": wez_ok,
-            "primary_label": label,
-            "primary_id": primary_id,
-            "cx": float(primary.get("cx", 0)) if primary else 0.0,
-            "cy": float(primary.get("cy", 0)) if primary else 0.0,
-            "vx": vx,
-            "vy": vy,
-            "range_m": range_m,
-            "range_text": wez_status_text(config, label, range_m) if primary else "-",
-            "maint_remaining_s": float(op.get("maint_remaining_s", 600)),
-            "in_forbidden": in_forbidden,
-            "detections": dets,
-            "jpeg": (last_track or {}).get("jpeg"),
-            "width": width,
-            "height": height,
-            "frame_id": (last_track or {}).get("frame_id"),
-            "log_events": events,
-        }
-        put_latest(ui_telem_q, telem)
+        if events:
+            pending_events.extend(events)
+        frame_id = (last_track or {}).get("frame_id")
+        new_frame = frame_id is not None and frame_id != last_frame_id_sent
+        # Strict UI rate limit — never bypass (was freezing Qt main thread)
+        due_ui = (now - last_ui_push) >= ui_period
+
+        if due_ui:
+            last_ui_push = now
+            jpeg = None
+            dets_out = []
+            if new_frame:
+                jpeg = (last_track or {}).get("jpeg")
+                last_frame_id_sent = frame_id
+                dets_out = dets if dets else ((last_track or {}).get("detections") or [])
+            log_batch = pending_events
+            pending_events = []
+            telem = {
+                "ts": now,
+                "linked": bool(serial_telem.get("linked", False)),
+                "mock": bool(serial_telem.get("mock", True)),
+                "failsafe": failsafe,
+                "status": int(serial_telem.get("status", 0)),
+                "limit_pan": int(serial_telem.get("limit_pan", 0)),
+                "limit_tilt": int(serial_telem.get("limit_tilt", 0)),
+                "fsm": fsm.state.name,
+                "stage": int(stage.value),
+                "estop_active": estop_active,
+                "estop_source": estop_source if estop_active else "-",
+                "estop_cleared_ack": estop_cleared_ack or (now < estop_ack_until),
+                "estop_reset_waiting_hw": estop_reset_waiting_hw,
+                "estop_reset_pending": estop_clear_pending,
+                "fps": float((last_track or {}).get("fps") or 0.0),
+                "latency_ms": float((last_track or {}).get("latency_ms") or 0.0),
+                "pan": int(round(pan_pos)),
+                "tilt": int(round(tilt_pos)),
+                "fire": int(fire_bit),
+                "locked": locked,
+                "wez_ok": wez_ok,
+                "primary_label": label,
+                "primary_id": primary_id,
+                "cx": float(primary.get("cx", 0)) if primary else 0.0,
+                "cy": float(primary.get("cy", 0)) if primary else 0.0,
+                "vx": vx,
+                "vy": vy,
+                "range_m": range_m,
+                "range_text": wez_status_text(config, label, range_m) if primary else "-",
+                "maint_remaining_s": float(op.get("maint_remaining_s", 600)),
+                "in_forbidden": in_forbidden,
+                "detections": dets_out,
+                "jpeg": jpeg,
+                "width": width,
+                "height": height,
+                "frame_id": frame_id,
+                "log_events": log_batch,
+                "has_frame": jpeg is not None,
+            }
+            put_latest(ui_telem_q, telem)
+
         time.sleep(0.01)
 
 
