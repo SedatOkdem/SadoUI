@@ -107,17 +107,33 @@ class TelemetryPanel(QWidget):
     def update_telemetry(self, t: dict) -> None:
         self._vals["fsm"].setText(str(t.get("fsm", "—")))
         self._vals["stage"].setText(f"A{t.get('stage', '—')}")
-        if t.get("estop_active") or str(t.get("fsm", "")) == "ESTOP":
+        if not t.get("estop_enabled", True):
+            self._vals["estop"].setText("KAPALI")
+            self._vals["estop"].setStyleSheet("color:#8aa0b4;")
+        elif t.get("estop_active") or str(t.get("fsm", "")) == "ESTOP":
             src = str(t.get("estop_source", "SW"))
             self._vals["estop"].setText(f"AKTİF ({src})")
             self._vals["estop"].setStyleSheet("color:#ff7a8a;")
         else:
             self._vals["estop"].setText("HAZIR")
             self._vals["estop"].setStyleSheet("color:#5ee0c4;")
-        link = "MOCK" if t.get("mock") else ("OK" if t.get("linked") else "YOK")
-        if t.get("failsafe"):
-            link += " / FS"
+        mock = bool(t.get("mock"))
+        linked = bool(t.get("linked"))
+        failsafe = bool(t.get("failsafe"))
+        if mock:
+            link = "MOCK (kart yok)"
+            color = "#f0b45a"
+        elif failsafe:
+            link = f"YOK {t.get('port', '')}".strip()
+            color = "#ff7a8a"
+        elif linked:
+            link = f"BAĞLI {t.get('port', '')}".strip()
+            color = "#5ee0c4"
+        else:
+            link = "BAĞLI DEĞİL"
+            color = "#ff7a8a"
         self._vals["link"].setText(link)
+        self._vals["link"].setStyleSheet(f"color:{color};")
         self._vals["fps"].setText(f"{float(t.get('fps', 0)):.1f}")
         self._vals["lat"].setText(f"{float(t.get('latency_ms', 0)):.0f} ms")
         self._vals["pan"].setText(f"{t.get('pan', 0)}°")

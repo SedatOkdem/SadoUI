@@ -12,5 +12,6 @@ logs/*.log
 logs/*.txt
 *.npz
 runs/
+datasets/
 .idea/
 .vscode/

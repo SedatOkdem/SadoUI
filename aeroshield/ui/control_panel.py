@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, pyqtSignal
+import time
+
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -14,6 +16,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +42,13 @@ class ControlPanel(QWidget):
         header = QLabel("KOMUTA")
         header.setObjectName("PanelHeader")
         root.addWidget(header)
+
+        self.lbl_esp = QLabel("ESP32  ·  BEKLENİYOR")
+        self.lbl_esp.setObjectName("EspBannerWarn")
+        self.lbl_esp.setAlignment(Qt.AlignCenter)
+        self.lbl_esp.setMinimumHeight(42)
+        self.lbl_esp.setWordWrap(True)
+        root.addWidget(self.lbl_esp)
 
         root.addWidget(self._section("GÖREV AŞAMASI"))
         stage_row = QHBoxLayout()
@@ -72,6 +82,11 @@ class ControlPanel(QWidget):
         self.btn_estop.setCheckable(True)
         self.btn_reset_estop = QPushButton("ESTOP RESET  ·  HAKEM")
         self.btn_reset_estop.setEnabled(False)
+        self._estop_enabled = bool(config.get("safety", {}).get("estop_enabled", False))
+        if not self._estop_enabled:
+            self.btn_estop.setEnabled(False)
+            self.btn_estop.setText("E-STOP KAPALI")
+            self.btn_reset_estop.setEnabled(False)
         self.btn_maint = QPushButton("BAKIM MOLASI")
         self.btn_maint.setCheckable(True)
         root.addWidget(self.btn_start)
@@ -92,19 +107,59 @@ class ControlPanel(QWidget):
         tilt_lim = ctrl.get("tilt_limits_deg", [-30, 60])
         self.pan_slider.setRange(int(pan_lim[0]), int(pan_lim[1]))
         self.tilt_slider.setRange(int(tilt_lim[0]), int(tilt_lim[1]))
-        self.pan_slider.setValue(0)
-        self.tilt_slider.setValue(0)
-        self.pan_value = QLabel("0°")
-        self.pan_value.setObjectName("ValueAccent")
-        self.pan_value.setMinimumWidth(36)
-        self.pan_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.tilt_value = QLabel("0°")
-        self.tilt_value.setObjectName("ValueAccent")
-        self.tilt_value.setMinimumWidth(36)
-        self.tilt_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        form.addRow("PAN", self._slider_row(self.pan_slider, self.pan_value))
-        form.addRow("TILT", self._slider_row(self.tilt_slider, self.tilt_value))
+        home_pan = int(ctrl.get("home_pan_deg", 135))
+        home_tilt = int(ctrl.get("home_tilt_deg", 0))
+        self.pan_slider.setValue(home_pan)
+        self.tilt_slider.setValue(home_tilt)
+        self.pan_spin = QSpinBox()
+        self.tilt_spin = QSpinBox()
+        self.pan_spin.setRange(int(pan_lim[0]), int(pan_lim[1]))
+        self.tilt_spin.setRange(int(tilt_lim[0]), int(tilt_lim[1]))
+        self.pan_spin.setSuffix("°")
+        self.tilt_spin.setSuffix("°")
+        self.pan_spin.setKeyboardTracking(False)
+        self.tilt_spin.setKeyboardTracking(False)
+        self.pan_spin.setFocusPolicy(Qt.ClickFocus)
+        self.tilt_spin.setFocusPolicy(Qt.ClickFocus)
+        self.pan_spin.setFixedWidth(78)
+        self.tilt_spin.setFixedWidth(78)
+        self.pan_spin.setValue(home_pan)
+        self.tilt_spin.setValue(home_tilt)
+        form.addRow("PAN", self._slider_row(self.pan_slider, self.pan_spin))
+        form.addRow("TILT", self._slider_row(self.tilt_slider, self.tilt_spin))
         root.addLayout(form)
+
+        root.addWidget(self._section("RS2205  ·  ESC SİNYAL  (L=R)"))
+        weapon = config.get("weapon", {})
+        form_esc = QFormLayout()
+        form_esc.setSpacing(6)
+        form_esc.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form_esc.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.esc_idle_spin = QSpinBox()
+        self.esc_fire_spin = QSpinBox()
+        self.esc_spin_ms = QSpinBox()
+        for sp, lo, hi, val, suf in (
+            (self.esc_idle_spin, 1000, 2000, int(weapon.get("esc_idle_us", 1060)), " µs"),
+            (self.esc_fire_spin, 1000, 2000, int(weapon.get("esc_fire_us", 1200)), " µs"),
+            (self.esc_spin_ms, 50, 2000, int(float(weapon.get("fire_spin_s", 0.45)) * 1000), " ms"),
+        ):
+            sp.setRange(lo, hi)
+            sp.setValue(val)
+            sp.setSuffix(suf)
+            sp.setKeyboardTracking(False)
+            sp.setFocusPolicy(Qt.ClickFocus)
+            sp.setFixedWidth(96)
+        self.esc_idle_spin.setToolTip("Sol+sağ ESC aynı — hazır / yavaş (1000=dur)")
+        self.esc_fire_spin.setToolTip("Sol+sağ ESC aynı ateş PWM — varsayılan 1200, paneldan değiştir")
+        self.esc_spin_ms.setToolTip("Ateş yüksek devir süresi (her iki motor)")
+        form_esc.addRow("IDLE L=R", self.esc_idle_spin)
+        form_esc.addRow("ATEŞ L=R", self.esc_fire_spin)
+        form_esc.addRow("SÜRE", self.esc_spin_ms)
+        hint_esc = QLabel("Ateşte L=R aynı µs. Varsayılan ateş 1200; üst sınır şimdilik yok (max 2000).")
+        hint_esc.setObjectName("HintLabel")
+        hint_esc.setWordWrap(True)
+        root.addLayout(form_esc)
+        root.addWidget(hint_esc)
 
         root.addWidget(self._section("YASAK PAN BÖLGESİ"))
         self.forbid_min = QSlider(Qt.Horizontal)
@@ -143,18 +198,21 @@ class ControlPanel(QWidget):
         self.port_combo = QComboBox()
         self.port_combo.setEditable(True)
         self.port_combo.addItem(str(config.get("serial", {}).get("port", "COM3")))
-        self.mock_check = QCheckBox("Mock ESP32")
+        self.mock_check = QCheckBox("Mock ESP32 (simülasyon)")
         self.mock_check.setChecked(bool(config.get("serial", {}).get("mock", True)))
         self.btn_refresh_ports = QPushButton("COM TARA")
         self.btn_refresh_ports.setObjectName("GhostButton")
+        self.btn_connect = QPushButton("ESP BAĞLAN")
+        self.btn_connect.setObjectName("PrimaryButton")
         form3.addRow(self.use_manual_range)
         form3.addRow("MENZİL", self.range_spin)
         form3.addRow("PORT", self.port_combo)
         form3.addRow(self.mock_check)
         form3.addRow(self.btn_refresh_ports)
+        form3.addRow(self.btn_connect)
         root.addLayout(form3)
 
-        hint = QLabel("W/S tilt · A/D pan · Space ateş · Esc E-STOP · Ctrl+L log temizle")
+        hint = QLabel("Aşama 1: kaydırıcı/sayı veya WASD basılı tut  ·  Aşama 2/3: otomatik takip  ·  Space ateş")
         hint.setObjectName("HintLabel")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -168,6 +226,8 @@ class ControlPanel(QWidget):
             self.btn_s3,
             self.pan_slider,
             self.tilt_slider,
+            self.pan_spin,
+            self.tilt_spin,
             self.btn_maint,
         )
 
@@ -179,33 +239,48 @@ class ControlPanel(QWidget):
         self.btn_maint.toggled.connect(self._emit)
         self.pan_slider.valueChanged.connect(self._on_pan)
         self.tilt_slider.valueChanged.connect(self._on_tilt)
+        self.pan_spin.valueChanged.connect(self._on_pan_spin)
+        self.tilt_spin.valueChanged.connect(self._on_tilt_spin)
+        self.esc_idle_spin.valueChanged.connect(self._on_esc_idle)
+        self.esc_fire_spin.valueChanged.connect(self._emit)
+        self.esc_spin_ms.valueChanged.connect(self._emit)
         self.forbid_min.valueChanged.connect(self._on_forbid)
         self.forbid_max.valueChanged.connect(self._on_forbid)
         self.use_manual_range.toggled.connect(self._emit)
         self.range_spin.valueChanged.connect(self._emit)
         self.btn_refresh_ports.clicked.connect(self.refresh_ports_clicked.emit)
+        self.btn_connect.clicked.connect(self._on_connect_esp)
+        self.mock_check.toggled.connect(self._emit)
 
         self._estop = False
         self._estop_clear = False
         self._reset_pending = False
+        self._estop_ignore_until = 0.0
         self._start_pulse = False
         self._fire_pulse = False
+        self._jog_pan = 0
+        self._jog_tilt = 0
+        self._axis_emit = QTimer(self)
+        self._axis_emit.setSingleShot(True)
+        self._axis_emit.timeout.connect(self._emit)
 
     def _section(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setObjectName("SectionTitle")
         return lbl
 
-    def _slider_row(self, slider: QSlider, value_lbl: QLabel) -> QWidget:
+    def _slider_row(self, slider: QSlider, editor: QWidget) -> QWidget:
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         lay.addWidget(slider, 1)
-        lay.addWidget(value_lbl)
+        lay.addWidget(editor)
         return w
 
     def set_estop_active(self, active: bool, source: str = "SW") -> None:
+        if active and time.time() < self._estop_ignore_until:
+            return
         if active == self._estop and self.btn_estop.isChecked() == active:
             if active:
                 self._update_estop_banner(source)
@@ -238,6 +313,7 @@ class ControlPanel(QWidget):
     def on_estop_cleared(self) -> None:
         self._estop_clear = False
         self._reset_pending = False
+        self._estop_ignore_until = time.time() + 2.0
         self.set_estop_active(False)
 
     def set_reset_pending(self, waiting_hw: bool = False) -> None:
@@ -250,11 +326,34 @@ class ControlPanel(QWidget):
         self.btn_reset_estop.setEnabled(False)
 
     def _on_pan(self, v: int) -> None:
-        self.pan_value.setText(f"{v}°")
-        self._emit()
+        self.pan_spin.blockSignals(True)
+        self.pan_spin.setValue(int(v))
+        self.pan_spin.blockSignals(False)
+        self._axis_emit.start(40)
 
     def _on_tilt(self, v: int) -> None:
-        self.tilt_value.setText(f"{v}°")
+        self.tilt_spin.blockSignals(True)
+        self.tilt_spin.setValue(int(v))
+        self.tilt_spin.blockSignals(False)
+        self._axis_emit.start(40)
+
+    def _on_pan_spin(self, v: int) -> None:
+        self.pan_slider.blockSignals(True)
+        self.pan_slider.setValue(int(v))
+        self.pan_slider.blockSignals(False)
+        self._emit()
+
+    def _on_tilt_spin(self, v: int) -> None:
+        self.tilt_slider.blockSignals(True)
+        self.tilt_slider.setValue(int(v))
+        self.tilt_slider.blockSignals(False)
+        self._emit()
+
+    def _on_esc_idle(self, v: int) -> None:
+        if self.esc_fire_spin.value() < v:
+            self.esc_fire_spin.blockSignals(True)
+            self.esc_fire_spin.setValue(v)
+            self.esc_fire_spin.blockSignals(False)
         self._emit()
 
     def _on_forbid(self, _: int) -> None:
@@ -279,6 +378,8 @@ class ControlPanel(QWidget):
         self._fire_pulse = False
 
     def _on_estop(self) -> None:
+        if not getattr(self, "_estop_enabled", False):
+            return
         if self._estop:
             return
         self.set_estop_active(True, "SW")
@@ -292,24 +393,60 @@ class ControlPanel(QWidget):
         self.set_reset_pending(waiting_hw=False)
         self.estop_reset_requested.emit()
         self._emit()
+        # Unlock immediately — worker used to bounce back to ESTOP from ESP echo
+        self.on_estop_cleared()
 
-    def nudge(self, d_pan: int, d_tilt: int) -> None:
+    def set_jog(self, pan: int, tilt: int) -> None:
         if self._estop:
+            pan, tilt = 0, 0
+        pan = 0 if pan == 0 else (1 if pan > 0 else -1)
+        tilt = 0 if tilt == 0 else (1 if tilt > 0 else -1)
+        if pan == self._jog_pan and tilt == self._jog_tilt:
             return
-        self.pan_slider.setValue(self.pan_slider.value() + d_pan)
-        self.tilt_slider.setValue(self.tilt_slider.value() + d_tilt)
+        self._jog_pan = pan
+        self._jog_tilt = tilt
+        self._emit()
 
     def set_pan_tilt(self, pan: int, tilt: int) -> None:
         if self._estop:
             return
         self.pan_slider.blockSignals(True)
         self.tilt_slider.blockSignals(True)
+        self.pan_spin.blockSignals(True)
+        self.tilt_spin.blockSignals(True)
         self.pan_slider.setValue(int(pan))
         self.tilt_slider.setValue(int(tilt))
-        self.pan_value.setText(f"{int(pan)}°")
-        self.tilt_value.setText(f"{int(tilt)}°")
+        self.pan_spin.setValue(int(pan))
+        self.tilt_spin.setValue(int(tilt))
         self.pan_slider.blockSignals(False)
         self.tilt_slider.blockSignals(False)
+        self.pan_spin.blockSignals(False)
+        self.tilt_spin.blockSignals(False)
+
+    def set_esp_status(
+        self, linked: bool, mock: bool, failsafe: bool = False, port: str = ""
+    ) -> None:
+        port_txt = f"  {port}" if port else ""
+        if mock:
+            self.lbl_esp.setText("ESP32  ·  MOCK  (kart bağlı değil)")
+            self.lbl_esp.setObjectName("EspBannerWarn")
+        elif failsafe:
+            self.lbl_esp.setText(f"ESP32  ·  BAĞLI DEĞİL{port_txt}")
+            self.lbl_esp.setObjectName("EspBannerBad")
+        elif linked:
+            self.lbl_esp.setText(f"ESP32  ·  BAĞLI{port_txt}")
+            self.lbl_esp.setObjectName("EspBannerOk")
+        else:
+            self.lbl_esp.setText(f"ESP32  ·  BAĞLI DEĞİL{port_txt}")
+            self.lbl_esp.setObjectName("EspBannerBad")
+        self.lbl_esp.style().unpolish(self.lbl_esp)
+        self.lbl_esp.style().polish(self.lbl_esp)
+
+    def _on_connect_esp(self) -> None:
+        self.mock_check.setChecked(False)
+        cmd = self.build_command()
+        cmd["serial_reconnect"] = True
+        self.command_changed.emit(cmd)
 
     def populate_ports(self, ports: list[str]) -> None:
         current = self.port_combo.currentText()
@@ -332,6 +469,11 @@ class ControlPanel(QWidget):
             "fire": self._fire_pulse,
             "pan_cmd": int(self.pan_slider.value()),
             "tilt_cmd": int(self.tilt_slider.value()),
+            "pan_jog": int(self._jog_pan),
+            "tilt_jog": int(self._jog_tilt),
+            "esc_idle_us": int(self.esc_idle_spin.value()),
+            "esc_fire_us": int(self.esc_fire_spin.value()),
+            "fire_spin_ms": int(self.esc_spin_ms.value()),
             "pan_forbidden_min": float(self.forbid_min.value()),
             "pan_forbidden_max": float(self.forbid_max.value()),
             "manual_range_m": manual_range,

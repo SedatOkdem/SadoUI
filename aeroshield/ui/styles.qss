@@ -337,6 +337,35 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 
+QLabel#EspBannerOk,
+QLabel#EspBannerWarn,
+QLabel#EspBannerBad {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: 2px 0;
+}
+
+QLabel#EspBannerOk {
+    background-color: #0f2a24;
+    border: 2px solid #2ea892;
+    color: #5ee0c4;
+}
+
+QLabel#EspBannerWarn {
+    background-color: #2a1d0f;
+    border: 2px solid #8a5a1f;
+    color: #f0b45a;
+}
+
+QLabel#EspBannerBad {
+    background-color: #3a1218;
+    border: 2px solid #c44755;
+    color: #ffb3bb;
+}
+
 QLabel#EstopBanner {
     background-color: #3a1218;
     border: 1px solid #c44755;

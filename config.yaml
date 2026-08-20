@@ -1,23 +1,33 @@
 camera:
-  index: 0
-  width: 1280
-  height: 720
-  fps: 60
+  index: 1
+  width: 1920
+  height: 1080
+  fps: 30  # C920 1080p MJPEG @ 30
+  backend: dshow  # dshow | msmf | auto (auto tries both and is slower to open)
   # Optional OpenCV calibration file (npz/OpenCV YAML or NPZ with camera_matrix, dist_coeffs)
   calibration_file: null
 
 model:
-  # Ultralytics weights path; yolov8n.pt downloads on first run
-  path: yolov8n.pt
-  conf: 0.35
+  # Trained Celik Kubbe weights (python scripts/train_celikkubbe.py).
+  # Missing file → fallback_path (COCO stub map).
+  path: models/aeroshield.pt
+  fallback_path: yolov8n.pt
+  conf: 0.80
   iou: 0.45
-  imgsz: 640          # inference size (display stays 1280x720; boxes scaled back)
-  max_det: 20
-  half: true          # FP16 on CUDA — big FPS win, negligible accuracy loss
-  device: ""          # "" = auto, "cpu", "0" for CUDA
-  # Custom class names for AeroShield training; empty = COCO + stub mapping
-  class_names: []
-  # Only these COCO ids when using stub map (airplane=4, bird=14, kite=33)
+  imgsz: 640          # match train letterbox
+  max_det: 10
+  half: true
+  device: ""
+  conf_by_class:
+    F16: 0.80
+    BalistikFuze: 0.80
+    Helikopter: 0.80
+    MiniIHA: 0.80
+    Dost: 0.80
+  dataset: datasets/aeroshield-merged/data.yaml
+  # Order must match merged dataset: 0 F16, 1 Fuze, 2 Helikopter, 3 MiniIHA, 4 Dost
+  class_names: [F16, BalistikFuze, Helikopter, MiniIHA, Dost]
+  # Only these COCO ids when using fallback_path (airplane=4, bird=14, kite=33)
   filter_classes: [4, 14, 33]
   coco_stub_map:
     airplane: F16
@@ -25,28 +35,64 @@ model:
     kite: BalistikFuze
     helicopter: Helikopter
 
+# Silhouette match for untextured 3D props (shape, not paint color).
+shape_detect:
+  enabled: true
+  min_corr: 0.80
+  fuze_min_corr: 0.80
+  f16_min_corr: 0.80
+  f16_templates: [f16, f16_prop]
+  min_area_frac: 0.0015
+  max_area_frac: 0.35
+  work_width: 320
+  every_n: 5
+
+# Bbox paint IFF: dominant red → düşman (sınıf kalır), blue → Dost
+color_iff:
+  enabled: true
+  classes: [Helikopter, F16, MiniIHA, BalistikFuze]
+  min_frac: 0.06
+  ratio: 1.2
+
 performance:
-  jpeg_quality: 70      # IPC encode quality (lower = faster)
-  camera_buffer: 1      # OpenCV buffer — 1 = lowest latency
-  infer_every_n: 1      # 2 = skip alternate frames (Kalman coast) if still slow
+  jpeg_quality: 55      # UI-only encode (camera→infer uses shared memory)
+  camera_buffer: 1
+  infer_every_n: 2      # 1/2 YOLO; Kalman coasts — camera stays 1080p
 
 serial:
   port: "COM3"
   baud: 115200
   timeout_s: 0.05
-  failsafe_timeout_s: 0.5
-  rate_hz: 30
-  mock: true  # true = no ESP32 required
+  failsafe_timeout_s: 1.5
+  rate_hz: 40
+  mock: true  # Gerçek ESP: kutuyu kapat, COM seç, ESP BAĞLAN
 
 control:
-  pid_pan: { kp: 0.45, ki: 0.02, kd: 0.08, i_limit: 40.0 }
-  pid_tilt: { kp: 0.45, ki: 0.02, kd: 0.08, i_limit: 40.0 }
-  lock_angle_deg: 0.3
+  # Slow complete close; reverse is a hard brake (see PID accel_dps2).
+  pid_pan: { kp: 1.4, ki: 0.02, kd: 0.35, i_limit: 6.0, out_limit: 28.0, accel_dps2: 40.0 }
+  pid_tilt: { kp: 1.1, ki: 0.015, kd: 0.28, i_limit: 4.0, out_limit: 18.0, accel_dps2: 28.0 }
+  pid_deadzone_deg: 0.35
+  lock_angle_deg: 0.4
   frame_center: [640, 360]  # overwritten from camera size at runtime
   degrees_per_pixel: 0.045
-  manual_step: 25  # pan/tilt step for WASD keys
+  invert_track_pan: true  # Stage 2/3 takip; WASD pan yönü değişmez
+  track_slew_dps: 28
+  tilt_slew_dps: 18
+  sticky_lost_frames: 10  # kutu gidince bu kadar kare başka hedefe atlama
+  sticky_center_frac: 0.55  # yeni hedef ekranın bu kadar merkezinde olmalı
+  jog_pan_dps: 40         # WASD basılı tut (Aşama 1), slider'a açı yazmaz
+  jog_tilt_dps: 25
+  manual_step: 8  # WASD pan step (degrees)
+  tilt_step: 2    # WASD tilt step (degrees)
+  home_pan_deg: 135     # ileri bakış (0 ve 270 karşı uçlar)
+  home_tilt_deg: 0
   pan_limits_deg: [0, 270]
   tilt_limits_deg: [-30, 60]
+
+weapon:
+  fire_spin_s: 0.45
+  esc_idle_us: 1060
+  esc_fire_us: 1200   # varsayılan ateş; panel 1000–2000 (şimdilik soft 1200 yok)
 
 wez:
   F16: [10.0, 15.0]
@@ -78,8 +124,11 @@ safety:
   pan_forbidden_max: 270
   maintenance_total_s: 600
   maintenance_min_s: 30
+  # true = no physical E-Stop button; software reset is enough
+  ignore_hw_estop: true
+  estop_enabled: false  # şimdilik E-STOP kapalı; true yapınca tekrar aktif
 
 ui:
   window_title: "AeroShield GCS"
-  target_gui_hz: 20
+  target_gui_hz: 25
   display_max_width: 960

@@ -99,7 +99,8 @@ class MainWindow(QMainWindow):
         root.addLayout(body, 1)
 
         self._apply_styles()
-        self._manual_step = int(config.get("control", {}).get("manual_step", 25))
+        self._jog_pan = 0
+        self._jog_tilt = 0
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
@@ -158,13 +159,16 @@ class MainWindow(QMainWindow):
         self.chip_stage.setText(f"AŞAMA  {stage}")
 
         if t.get("mock"):
-            self.chip_link.setText("LINK  MOCK")
+            self.chip_link.setText("ESP  MOCK")
             self.chip_link.setObjectName("StatusChipWarn")
+        elif t.get("failsafe"):
+            self.chip_link.setText("ESP  KOPTU")
+            self.chip_link.setObjectName("StatusChipBad")
         elif t.get("linked"):
-            self.chip_link.setText("LINK  OK")
+            self.chip_link.setText("ESP  BAĞLI")
             self.chip_link.setObjectName("StatusChipOk")
         else:
-            self.chip_link.setText("LINK  YOK")
+            self.chip_link.setText("ESP  BAĞLI DEĞİL")
             self.chip_link.setObjectName("StatusChipBad")
         self.chip_link.style().unpolish(self.chip_link)
         self.chip_link.style().polish(self.chip_link)
@@ -178,7 +182,10 @@ class MainWindow(QMainWindow):
         self.chip_lock.style().unpolish(self.chip_lock)
         self.chip_lock.style().polish(self.chip_lock)
 
-        if t.get("estop_active") or fsm == "ESTOP":
+        if not bool(self.config.get("safety", {}).get("estop_enabled", False)):
+            self.chip_estop.setText("E-STOP  KAPALI")
+            self.chip_estop.setObjectName("StatusChip")
+        elif t.get("estop_active") or fsm == "ESTOP":
             src = t.get("estop_source", "SW")
             self.chip_estop.setText(f"E-STOP  AKTİF ({src})")
             self.chip_estop.setObjectName("StatusChipBad")
@@ -202,21 +209,44 @@ class MainWindow(QMainWindow):
         self.setFont(QFont("Bahnschrift", 10))
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.isAutoRepeat():
+            return
         key = event.key()
-        step = self._manual_step
-        if key == Qt.Key_W:
-            self.control.nudge(0, step)
-        elif key == Qt.Key_S:
-            self.control.nudge(0, -step)
-        elif key == Qt.Key_A:
-            self.control.nudge(-step, 0)
-        elif key == Qt.Key_D:
-            self.control.nudge(step, 0)
+        stage = int(self.control.stage_group.checkedId())
+        if key in (Qt.Key_W, Qt.Key_S, Qt.Key_A, Qt.Key_D):
+            if stage != 1:
+                return
+            if key == Qt.Key_W:
+                self._jog_tilt = 1
+            elif key == Qt.Key_S:
+                self._jog_tilt = -1
+            elif key == Qt.Key_A:
+                self._jog_pan = 1
+            elif key == Qt.Key_D:
+                self._jog_pan = -1
+            self.control.set_jog(self._jog_pan, self._jog_tilt)
         elif key == Qt.Key_Space:
             self.control._on_fire()
         elif key == Qt.Key_Escape:
-            self.control._on_estop()
+            if bool(self.config.get("safety", {}).get("estop_enabled", False)):
+                self.control._on_estop()
         elif key == Qt.Key_L and event.modifiers() & Qt.ControlModifier:
             self.telemetry.clear_log()
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.isAutoRepeat():
+            return
+        key = event.key()
+        changed = False
+        if key in (Qt.Key_A, Qt.Key_D):
+            self._jog_pan = 0
+            changed = True
+        elif key in (Qt.Key_W, Qt.Key_S):
+            self._jog_tilt = 0
+            changed = True
+        if changed:
+            self.control.set_jog(self._jog_pan, self._jog_tilt)
+        else:
+            super().keyReleaseEvent(event)

@@ -7,7 +7,7 @@ from typing import Any, Optional
 import cv2
 import numpy as np
 
-from aeroshield.core.modes import in_wez
+from aeroshield.core.modes import display_target_name, in_wez
 from aeroshield.workers.ipc import Detection
 
 
@@ -74,7 +74,7 @@ def draw_detections(
                 range_txt = f"  {d.range_m:.1f}m{' ✓' if ok else ' !'}"
             else:
                 range_txt = f"  {d.range_m:.1f}m"
-        tag = f"ID{d.track_id}  {d.label}  {d.conf:.0%}{range_txt}"
+        tag = f"ID{d.track_id}  {display_target_name(d.label, d.hostile)}  {d.conf:.0%}{range_txt}"
         (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         ty = max(22, y1 - 8)
         cv2.rectangle(frame, (x1, ty - th - 6), (x1 + tw + 10, ty + 4), (10, 14, 18), -1)
@@ -111,7 +111,7 @@ def draw_hud(
     estop: bool = False,
     mock: bool = False,
 ) -> None:
-    link = "MOCK" if mock else ("OK" if linked else "NO")
+    link = "MOCK" if mock else ("ESP OK" if linked else "ESP NO")
     lines = [
         "AEROSHIELD GCS",
         f"A{stage}  ·  {fsm}",
@@ -123,18 +123,3 @@ def draw_hud(
     if estop:
         lines.append("! E-STOP ACTIVE")
     _hud_panel(frame, 16, 16, lines)
-
-    # bottom-right system strip
-    h, w = frame.shape[:2]
-    strip = f"TEKNOFEST 2026  ·  CELIKKUBBE"
-    (tw, th), _ = cv2.getTextSize(strip, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-    cv2.putText(
-        frame,
-        strip,
-        (w - tw - 18, h - 16),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (90, 120, 140),
-        1,
-        cv2.LINE_AA,
-    )

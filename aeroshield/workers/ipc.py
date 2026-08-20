@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass, field
+from multiprocessing import shared_memory
 from typing import Any, Optional
+
+import numpy as np
 
 
 def put_latest(q, item, drop_old: bool = True) -> None:
@@ -26,6 +29,91 @@ def put_latest(q, item, drop_old: bool = True) -> None:
             q.put_nowait(item)
         except Exception:
             pass
+
+
+class FrameRing:
+    """Double-buffered BGR frames in shared memory (camera → inference)."""
+
+    SLOTS = 2
+
+    def __init__(
+        self,
+        max_w: int = 1280,
+        max_h: int = 720,
+        *,
+        create: bool = True,
+        names: Optional[list[str]] = None,
+    ) -> None:
+        self.max_w = int(max_w)
+        self.max_h = int(max_h)
+        self.nbytes = self.max_w * self.max_h * 3
+        self._shms: list[shared_memory.SharedMemory] = []
+        self._names: list[str] = []
+        self._write_i = 0
+        for i in range(self.SLOTS):
+            if create:
+                shm = shared_memory.SharedMemory(create=True, size=self.nbytes)
+            else:
+                if not names or i >= len(names):
+                    raise ValueError("FrameRing attach requires two shared-memory names")
+                shm = shared_memory.SharedMemory(name=str(names[i]))
+            self._shms.append(shm)
+            self._names.append(shm.name)
+
+    @property
+    def names(self) -> list[str]:
+        return list(self._names)
+
+    def write(self, frame: np.ndarray) -> tuple[int, int, int]:
+        """Copy BGR frame into next slot. Returns (slot, width, height)."""
+        if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError("FrameRing.write expects HxWx3 BGR uint8")
+        h, w = int(frame.shape[0]), int(frame.shape[1])
+        if w > self.max_w or h > self.max_h:
+            raise ValueError(f"frame {w}x{h} exceeds ring {self.max_w}x{self.max_h}")
+        slot = self._write_i % self.SLOTS
+        self._write_i += 1
+        buf = np.ndarray((self.max_h, self.max_w, 3), dtype=np.uint8, buffer=self._shms[slot].buf)
+        # Contiguous copy into shared buffer
+        np.copyto(buf[:h, :w], np.ascontiguousarray(frame))
+        return slot, w, h
+
+    def read(self, slot: int, width: int, height: int) -> np.ndarray:
+        """Return a private copy of the slot crop (safe vs camera overwrite)."""
+        slot = int(slot) % self.SLOTS
+        w = int(width)
+        h = int(height)
+        if w <= 0 or h <= 0 or w > self.max_w or h > self.max_h:
+            raise ValueError(f"invalid read size {w}x{h}")
+        buf = np.ndarray((self.max_h, self.max_w, 3), dtype=np.uint8, buffer=self._shms[slot].buf)
+        return buf[:h, :w].copy()
+
+    def close(self) -> None:
+        for shm in self._shms:
+            try:
+                shm.close()
+            except Exception:
+                pass
+
+    def unlink(self) -> None:
+        for shm in self._shms:
+            try:
+                shm.unlink()
+            except Exception:
+                pass
+
+    def close_and_unlink(self) -> None:
+        self.close()
+        self.unlink()
+
+    @staticmethod
+    def from_meta(meta: dict[str, Any]) -> "FrameRing":
+        return FrameRing(
+            max_w=int(meta.get("max_w", 1280)),
+            max_h=int(meta.get("max_h", 720)),
+            create=False,
+            names=list(meta.get("names") or []),
+        )
 
 
 @dataclass

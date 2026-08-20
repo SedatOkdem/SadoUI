@@ -9,8 +9,12 @@ from typing import Optional
 
 SOF = 0xAA
 EOF = 0xFF
-CMD_LEN = 9
+# [AA][MOD][PAN_H][PAN_L][TILT_H][TILT_L][FIRE]
+# [IDLE_H][IDLE_L][FIRE_H][FIRE_L][SPIN_CS][CHK][FF]
+CMD_LEN = 14
 STATUS_LEN = 6
+ESC_MIN_US = 1000
+ESC_MAX_US = 2000  # full ESC range; panel can set freely for now
 
 
 class ModCode(IntEnum):
@@ -51,16 +55,30 @@ def decode_i16(hi: int, lo: int) -> int:
     return value
 
 
+def clamp_esc_us(us: int) -> int:
+    return max(ESC_MIN_US, min(ESC_MAX_US, int(us)))
+
+
 @dataclass
 class CommandPacket:
     mod: int = ModCode.MANUAL
     pan: int = 0
     tilt: int = 0
     fire: int = 0
+    esc_idle_us: int = 1060
+    esc_fire_us: int = 1200
+    fire_spin_ms: int = 450
 
     def to_bytes(self) -> bytes:
         pan_h, pan_l = encode_i16(self.pan)
         tilt_h, tilt_l = encode_i16(self.tilt)
+        idle = clamp_esc_us(self.esc_idle_us)
+        fire_us = clamp_esc_us(self.esc_fire_us)
+        if fire_us < idle:
+            fire_us = idle
+        idle_h, idle_l = encode_i16(idle)
+        fire_h, fire_l = encode_i16(fire_us)
+        spin_cs = max(1, min(255, int(round(self.fire_spin_ms / 10.0))))
         body = bytes(
             [
                 SOF,
@@ -70,9 +88,14 @@ class CommandPacket:
                 tilt_h,
                 tilt_l,
                 1 if self.fire else 0,
+                idle_h,
+                idle_l,
+                fire_h,
+                fire_l,
+                spin_cs & 0xFF,
             ]
         )
-        checksum = xor_checksum(body[1:])  # MOD..FIRE
+        checksum = xor_checksum(body[1:])  # MOD..SPIN
         return body + bytes([checksum, EOF])
 
 
@@ -88,7 +111,7 @@ class StatusPacket:
             return None
         if raw[0] != SOF or raw[-1] != EOF:
             return None
-        payload = raw[1:4]  # STATUS, LIMIT_PAN, LIMIT_TILT
+        payload = raw[1:4]
         checksum = raw[4]
         if xor_checksum(payload) != checksum:
             return None

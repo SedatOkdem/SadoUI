@@ -117,20 +117,22 @@ class GuiBridge(QThread):
             if frame is None:
                 return None
 
-            # Downscale early — overlay + Qt paint stay cheap
+            # Scale boxes from camera space → decoded JPEG space
+            cam_w = float(payload.get("width") or frame.shape[1] or 1)
+            cam_h = float(payload.get("height") or frame.shape[0] or 1)
+            sx = float(frame.shape[1]) / cam_w
+            sy = float(frame.shape[0]) / cam_h
+            # Optional extra downscale if JPEG still larger than display budget
             max_w = int(self.config.get("ui", {}).get("display_max_width", 960))
             if frame.shape[1] > max_w:
-                scale = max_w / float(frame.shape[1])
+                extra = max_w / float(frame.shape[1])
                 frame = cv2.resize(
                     frame,
-                    (int(frame.shape[1] * scale), int(frame.shape[0] * scale)),
+                    (int(frame.shape[1] * extra), int(frame.shape[0] * extra)),
                     interpolation=cv2.INTER_AREA,
                 )
-                # Scale detection boxes to match resized frame
-                sx = scale
-                sy = scale
-            else:
-                sx = sy = 1.0
+                sx *= extra
+                sy *= extra
 
             detections = []
             for d in payload.get("detections") or []:

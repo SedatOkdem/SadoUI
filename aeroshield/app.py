@@ -16,6 +16,7 @@ from aeroshield.workers.camera_worker import start_camera_process
 from aeroshield.workers.control_worker import start_control_process
 from aeroshield.workers.gui_bridge import GuiBridge
 from aeroshield.workers.inference_worker import start_inference_process
+from aeroshield.workers.ipc import FrameRing
 from aeroshield.workers.serial_worker import start_serial_process
 
 
@@ -33,9 +34,22 @@ class AeroShieldApp:
         self.frame_q: Queue = Queue(maxsize=2)
         self.track_q: Queue = Queue(maxsize=2)
         self.uart_cmd_q: Queue = Queue(maxsize=4)
+        self.serial_cfg_q: Queue = Queue(maxsize=4)
         self.serial_telem_q: Queue = Queue(maxsize=4)
         self.op_q: Queue = Queue(maxsize=16)
         self.ui_telem_q: Queue = Queue(maxsize=8)
+
+        cam = self.config.get("camera", {})
+        self.frame_ring = FrameRing(
+            max_w=int(cam.get("width", 1280)),
+            max_h=int(cam.get("height", 720)),
+            create=True,
+        )
+        self.ring_meta = {
+            "names": self.frame_ring.names,
+            "max_w": self.frame_ring.max_w,
+            "max_h": self.frame_ring.max_h,
+        }
 
         self.processes = []
         self.bridge: Optional[GuiBridge] = None
@@ -46,11 +60,15 @@ class AeroShieldApp:
         self._estop_ack_logged = False
         self._last_slider_sync = 0.0
         self._last_range_sync = 0.0
+        self._last_esp_key = None
+        self._last_serial_key = None
 
     def start_workers(self) -> None:
         self.processes = [
-            start_camera_process(self.frame_q, self.stop_event, self.config),
-            start_inference_process(self.frame_q, self.track_q, self.stop_event, self.config),
+            start_camera_process(self.frame_q, self.stop_event, self.config, self.ring_meta),
+            start_inference_process(
+                self.frame_q, self.track_q, self.stop_event, self.config, self.ring_meta
+            ),
             start_control_process(
                 self.track_q,
                 self.op_q,
@@ -59,7 +77,13 @@ class AeroShieldApp:
                 self.stop_event,
                 self.config,
             ),
-            start_serial_process(self.uart_cmd_q, self.serial_telem_q, self.stop_event, self.config),
+            start_serial_process(
+                self.uart_cmd_q,
+                self.serial_telem_q,
+                self.stop_event,
+                self.config,
+                self.serial_cfg_q,
+            ),
         ]
 
     def stop_workers(self) -> None:
@@ -71,6 +95,10 @@ class AeroShieldApp:
             p.join(timeout=2.0)
             if p.is_alive():
                 p.terminate()
+        try:
+            self.frame_ring.close_and_unlink()
+        except Exception:
+            pass
 
     def run(self) -> int:
         import sys
@@ -158,6 +186,31 @@ class AeroShieldApp:
                 self.op_q.put_nowait(payload)
             except Exception:
                 pass
+        self._push_serial_cfg(payload, reconnect=bool(payload.get("serial_reconnect")))
+
+    def _push_serial_cfg(self, payload: dict, reconnect: bool = False) -> None:
+        port = str(payload.get("serial_port") or self.config.get("serial", {}).get("port", "COM3")).strip()
+        mock = bool(payload.get("serial_mock", self.config.get("serial", {}).get("mock", True)))
+        baud = int(self.config.get("serial", {}).get("baud", 115200))
+        key = (port, mock, baud)
+        if not reconnect and key == self._last_serial_key:
+            return
+        self._last_serial_key = key
+        try:
+            self.serial_cfg_q.put_nowait(
+                {"type": "serial_cfg", "port": port, "mock": mock, "baud": baud, "reconnect": reconnect}
+            )
+        except Exception:
+            try:
+                self.serial_cfg_q.get_nowait()
+            except Exception:
+                pass
+            try:
+                self.serial_cfg_q.put_nowait(
+                    {"type": "serial_cfg", "port": port, "mock": mock, "baud": baud, "reconnect": True}
+                )
+            except Exception:
+                pass
 
     def _on_telemetry(self, telem: dict) -> None:
         if self.window is None:
@@ -166,6 +219,24 @@ class AeroShieldApp:
         telem["maint_remaining_s"] = self._maint_remaining
         self.window.telemetry.update_telemetry(telem)
         self.window.update_top_bar(telem)
+        self.window.control.set_esp_status(
+            bool(telem.get("linked")),
+            bool(telem.get("mock")),
+            bool(telem.get("failsafe")),
+            str(telem.get("port") or ""),
+        )
+        esp_key = (bool(telem.get("mock")), bool(telem.get("linked")), bool(telem.get("failsafe")))
+        if esp_key != self._last_esp_key:
+            self._last_esp_key = esp_key
+            if telem.get("mock"):
+                msg = "ESP32: MOCK (gerçek kart bağlı değil)"
+            elif telem.get("failsafe"):
+                msg = f"ESP32: bağlantı yok ({telem.get('port', '')})"
+            elif telem.get("linked"):
+                msg = f"ESP32: BAĞLI ({telem.get('port', '')})"
+            else:
+                msg = f"ESP32: BAĞLI DEĞİL ({telem.get('port', '')})"
+            self.window.telemetry.append_log(msg)
         if telem.get("estop_cleared_ack"):
             self.window.control.on_estop_cleared()
             if not self._estop_ack_logged:

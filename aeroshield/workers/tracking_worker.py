@@ -23,7 +23,6 @@ class MultiKalmanTracker:
             kf.predict(dt)
             cx, cy, vx, vy = kf.update(d.cx, d.cy)
             d.cx, d.cy = cx, cy
-            # stash velocity on object dynamically for IPC
             d.vx = vx  # type: ignore[attr-defined]
             d.vy = vy  # type: ignore[attr-defined]
         for tid in list(self.filters.keys()):

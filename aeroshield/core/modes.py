@@ -17,16 +17,28 @@ def normalize_label(name: str) -> str:
     aliases = {
         "F-16": "F16",
         "f16": "F16",
+        "F16": "F16",
+        "fighter": "F16",
+        "jet": "F16",
         "airplane": "F16",
+        "aeroplane": "F16",
         "heli": "Helikopter",
         "helicopter": "Helikopter",
+        "helikopter": "Helikopter",
         "missile": "BalistikFuze",
         "balistik": "BalistikFuze",
         "Balistik Füze": "BalistikFuze",
+        "fuze": "BalistikFuze",
+        "füze": "BalistikFuze",
         "uav": "MiniIHA",
         "drone": "MiniIHA",
+        "Drone": "MiniIHA",
         "Mini/Micro İHA": "MiniIHA",
         "MiniIHA": "MiniIHA",
+        "mini_iha": "MiniIHA",
+        "mini-iha": "MiniIHA",
+        "miniiha": "MiniIHA",
+        "iha": "MiniIHA",
         "bird": "MiniIHA",
         "kite": "BalistikFuze",
         "dost": "Dost",
@@ -41,6 +53,18 @@ def is_hostile(label: str) -> bool:
     if lab in FRIENDLY_TYPES or lab == "Dost":
         return False
     return lab in HOSTILE_TYPES or lab not in FRIENDLY_TYPES
+
+
+def display_target_name(label: str, hostile: bool | None = None) -> str:
+    """UI tag: 'Dost Helikopter' / 'Düşman F16' (type always visible when known)."""
+    lab = normalize_label(label)
+    side_hostile = is_hostile(lab) if hostile is None else bool(hostile)
+    side = "Düşman" if side_hostile else "Dost"
+    if lab in HOSTILE_TYPES:
+        return f"{side} {lab}"
+    if lab == "Dost":
+        return "Dost"
+    return f"{side} {lab}" if lab else side
 
 
 def wez_limits(config: dict[str, Any], label: str) -> tuple[float, float]:
@@ -72,6 +96,7 @@ def auto_fire_allowed(
     range_m: float | None,
     config: dict[str, Any],
     locked: bool,
+    hostile: bool | None = None,
 ) -> bool:
     if not locked:
         return False
@@ -80,6 +105,7 @@ def auto_fire_allowed(
     if stage == Stage.STAGE2:
         return True
     # Stage 3
-    if not is_hostile(label):
+    is_h = is_hostile(label) if hostile is None else bool(hostile)
+    if not is_h:
         return False
     return in_wez(config, label, range_m)
